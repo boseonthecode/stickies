@@ -1,13 +1,11 @@
+use std::rc::Rc;
+
 use clap::Parser;
 use gio::prelude::*;
-use gtk4 as gtk;
 use libadwaita as adw;
-use libadwaita::prelude::*;
 
 use crate::cli::Cli;
-
-const BROWSER_WINDOW: &str = "browser-window";
-const NOTE_WINDOW: &str = "note-window";
+use crate::ui::registry::WindowRegistry;
 
 pub fn run() -> glib::ExitCode {
     let app = adw::Application::builder()
@@ -15,25 +13,31 @@ pub fn run() -> glib::ExitCode {
         .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)
         .build();
 
-    app.connect_startup(setup_actions);
-    app.connect_activate(open_browser_window);
+    let registry = Rc::new(WindowRegistry::default());
+    let startup_registry = Rc::clone(&registry);
+    let activate_registry = Rc::clone(&registry);
+
+    app.connect_startup(move |app| setup_actions(app, &startup_registry));
+    app.connect_activate(move |app| activate_registry.open_browser(app));
     app.connect_command_line(handle_command_line);
     app.run()
 }
 
-fn setup_actions(app: &adw::Application) {
+fn setup_actions(app: &adw::Application, registry: &Rc<WindowRegistry>) {
     // Startup only runs in the primary instance; the hold keeps it resident after windows close.
     std::mem::forget(app.hold());
     tracing::info!("application startup");
 
     let new_action = gio::SimpleAction::new("new", None);
     let new_app = app.clone();
-    new_action.connect_activate(move |_, _| open_note_window(&new_app));
+    let new_registry = Rc::clone(registry);
+    new_action.connect_activate(move |_, _| new_registry.open_note(&new_app));
     app.add_action(&new_action);
 
     let browse_action = gio::SimpleAction::new("browse", None);
     let browse_app = app.clone();
-    browse_action.connect_activate(move |_, _| open_browser_window(&browse_app));
+    let browse_registry = Rc::clone(registry);
+    browse_action.connect_activate(move |_, _| browse_registry.open_browser(&browse_app));
     app.add_action(&browse_action);
 
     let quit_action = gio::SimpleAction::new("quit", None);
@@ -63,43 +67,4 @@ fn handle_command_line(
     }
 
     glib::ExitCode::SUCCESS
-}
-
-fn open_note_window(app: &adw::Application) {
-    tracing::info!("creating note window");
-    present_window(app, "Stickies Note", NOTE_WINDOW);
-}
-
-fn open_browser_window(app: &adw::Application) {
-    if let Some(window) = app
-        .windows()
-        .iter()
-        .find(|window| window.widget_name().as_str() == BROWSER_WINDOW)
-    {
-        tracing::info!("focusing existing browser window");
-        window.present();
-        return;
-    }
-
-    tracing::info!("creating browser window");
-    present_window(app, "Stickies", BROWSER_WINDOW);
-}
-
-fn present_window(app: &adw::Application, title: &str, widget_name: &str) {
-    let window = adw::ApplicationWindow::builder()
-        .application(app)
-        .title(title)
-        .default_width(420)
-        .default_height(320)
-        .build();
-    window.set_widget_name(widget_name);
-
-    let header = adw::HeaderBar::new();
-    let content = gtk::Label::new(Some(title));
-    let toolbar = adw::ToolbarView::new();
-    toolbar.add_top_bar(&header);
-    toolbar.set_content(Some(&content));
-
-    window.set_content(Some(&toolbar));
-    window.present();
 }
