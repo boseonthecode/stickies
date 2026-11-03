@@ -5,9 +5,22 @@ use gio::prelude::*;
 use libadwaita as adw;
 
 use crate::cli::Cli;
+use crate::config::DataPaths;
 use crate::ui::registry::WindowRegistry;
 
 pub fn run() -> glib::ExitCode {
+    let data_paths = match DataPaths::resolve().and_then(|paths| {
+        paths.ensure_dirs()?;
+        Ok(paths)
+    }) {
+        Ok(paths) => paths,
+        Err(error) => {
+            tracing::error!(%error, "failed to initialize data directory");
+            return glib::ExitCode::FAILURE;
+        }
+    };
+    tracing::info!(root = %data_paths.root.display(), "data directories ready");
+
     let app = adw::Application::builder()
         .application_id(crate::APP_ID)
         .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)
