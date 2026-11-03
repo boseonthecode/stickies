@@ -1,0 +1,11 @@
+# Local planning and memory bank (not tracked)
+docs/
+/AGENTS.md
+/idea.md
+
+# Rust build artifacts
+/target/
+
+# Local environment/secrets (never commit)
+.env
+.env.*
