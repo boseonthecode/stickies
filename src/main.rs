@@ -1,18 +1,9 @@
 use clap::Parser;
-
-mod application;
-mod cli;
-mod config;
-mod error;
-mod logging;
-mod storage;
-mod ui;
-mod util;
-
-const APP_ID: &str = "io.github.chthonic.Stickies";
+use stickies::cli::Cli;
+use stickies::{application, logging};
 
 fn main() -> glib::ExitCode {
-    let cli = cli::Cli::parse();
+    let cli = Cli::parse();
     logging::init();
 
     if cli.background || cli.gapplication_service {
