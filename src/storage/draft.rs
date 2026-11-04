@@ -1,8 +1,11 @@
+use std::fs;
+
 use uuid::Uuid;
 
 use crate::error::StorageError;
 
 use super::note::{Note, NoteStore};
+use super::paths;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SaveOutcome {
@@ -81,6 +84,49 @@ impl NoteDraft {
         self.dirty = false;
 
         Ok(SaveOutcome::Saved)
+    }
+
+    pub fn finish(&mut self) -> Result<SaveOutcome, StorageError> {
+        let outcome = self.save_if_needed()?;
+
+        if outcome == SaveOutcome::Deferred {
+            self.discard_if_empty()?;
+        }
+
+        Ok(outcome)
+    }
+
+    pub fn discard_if_empty(&mut self) -> Result<bool, StorageError> {
+        if self.persisted || self.has_content() {
+            return Ok(false);
+        }
+
+        let dir = paths::note_dir(self.store.paths(), self.note.meta.id);
+
+        match fs::symlink_metadata(&dir) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(StorageError::Symlink { path: dir });
+            }
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(StorageError::NotDirectory { path: dir });
+            }
+            Ok(_) => {
+                fs::remove_dir_all(&dir).map_err(|source| StorageError::Remove {
+                    path: dir.clone(),
+                    source,
+                })?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(StorageError::Read {
+                    path: dir.clone(),
+                    source,
+                });
+            }
+        }
+
+        self.dirty = false;
+        Ok(true)
     }
 }
 
@@ -196,6 +242,33 @@ mod tests {
                 .body
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn finishing_an_empty_new_draft_removes_partial_state() {
+        let (_temp, store) = store();
+        let mut draft = NoteDraft::new(store.clone());
+        let dir = paths::note_dir(store.paths(), draft.id());
+        fs::create_dir_all(&dir).expect("partial directory");
+        fs::write(dir.join("partial"), b"leftover").expect("partial file");
+
+        assert_eq!(
+            draft.finish().expect("draft finished"),
+            SaveOutcome::Deferred
+        );
+        assert!(!dir.exists());
+        assert!(store.list_ids().expect("notes listed").is_empty());
+    }
+
+    #[test]
+    fn finishing_never_discards_a_persisted_note() {
+        let (_temp, store) = store();
+        let note = store.create().expect("note created");
+        let dir = paths::note_dir(store.paths(), note.meta.id);
+        let mut draft = NoteDraft::existing(store, note.meta.id).expect("draft loaded");
+
+        assert_eq!(draft.finish().expect("draft finished"), SaveOutcome::Clean);
+        assert!(dir.exists());
     }
 
     #[test]

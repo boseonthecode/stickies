@@ -44,6 +44,12 @@ pub enum StorageError {
         #[source]
         source: io::Error,
     },
+    #[error("failed to remove {path}: {source}")]
+    Remove {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
     #[error("failed to set permissions on {path}: {source}")]
     SetPermissions {
         path: PathBuf,

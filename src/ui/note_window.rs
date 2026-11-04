@@ -19,6 +19,10 @@ pub const WIDGET_NAME: &str = "note-window";
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(650);
 const SAVE_ERROR_MESSAGE: &str = "Could not save note. Check disk space and permissions.";
 
+pub fn existing_widget_name(id: Uuid) -> String {
+    format!("{WIDGET_NAME}:{id}")
+}
+
 pub fn present(app: &adw::Application, number: u64, store: NoteStore) {
     present_draft(app, number, NoteDraft::new(store));
 }
@@ -42,7 +46,11 @@ fn present_draft(app: &adw::Application, number: u64, draft: NoteDraft) {
         .default_width(440)
         .default_height(360)
         .build();
-    window.set_widget_name(WIDGET_NAME);
+    if draft.is_persisted() {
+        window.set_widget_name(&existing_widget_name(draft.id()));
+    } else {
+        window.set_widget_name(WIDGET_NAME);
+    }
 
     let title_widget = adw::WindowTitle::new(&title, "");
     let header = adw::HeaderBar::new();
@@ -109,6 +117,7 @@ fn present_draft(app: &adw::Application, number: u64, draft: NoteDraft) {
 
     let changed_session = Rc::clone(&session);
     let changed_debounce = Rc::clone(&debounce);
+    let changed_window = window.clone();
     let changed_title = title_widget.clone();
     let changed_overlay = overlay.clone();
     buffer.connect_changed(move |buffer| {
@@ -123,18 +132,20 @@ fn present_draft(app: &adw::Application, number: u64, draft: NoteDraft) {
         }
 
         let save_session = Rc::clone(&changed_session);
+        let save_window = changed_window.clone();
         let save_title = changed_title.clone();
         let save_overlay = changed_overlay.clone();
         let next_debounce = Rc::clone(&changed_debounce);
         let source = glib::timeout_add_local_once(AUTOSAVE_DELAY, move || {
             next_debounce.borrow_mut().take();
-            save_now(&save_session, &save_title, &save_overlay);
+            save_now(&save_session, &save_window, &save_title, &save_overlay);
         });
         *changed_debounce.borrow_mut() = Some(source);
     });
 
     let close_session = Rc::clone(&session);
     let close_debounce = Rc::clone(&debounce);
+    let close_window = window.clone();
     let close_title = title_widget.clone();
     let close_overlay = overlay.clone();
     window.connect_close_request(move |_| {
@@ -142,7 +153,7 @@ fn present_draft(app: &adw::Application, number: u64, draft: NoteDraft) {
             source.remove();
         }
 
-        if save_now(&close_session, &close_title, &close_overlay) {
+        if flush_now(&close_session, &close_window, &close_title, &close_overlay) {
             glib::Propagation::Proceed
         } else {
             glib::Propagation::Stop
@@ -169,12 +180,38 @@ fn present_draft(app: &adw::Application, number: u64, draft: NoteDraft) {
 
 fn save_now(
     session: &Rc<RefCell<NoteDraft>>,
+    window: &adw::ApplicationWindow,
     title: &adw::WindowTitle,
     overlay: &adw::ToastOverlay,
 ) -> bool {
     let id = session.borrow().id();
+    let outcome = session.borrow_mut().save_if_needed();
+    handle_save_outcome(outcome, id, window, title, overlay)
+}
 
-    match session.borrow_mut().save_if_needed() {
+fn flush_now(
+    session: &Rc<RefCell<NoteDraft>>,
+    window: &adw::ApplicationWindow,
+    title: &adw::WindowTitle,
+    overlay: &adw::ToastOverlay,
+) -> bool {
+    let id = session.borrow().id();
+    let outcome = session.borrow_mut().finish();
+    handle_save_outcome(outcome, id, window, title, overlay)
+}
+
+fn handle_save_outcome(
+    outcome: Result<SaveOutcome, StorageError>,
+    id: Uuid,
+    window: &adw::ApplicationWindow,
+    title: &adw::WindowTitle,
+    overlay: &adw::ToastOverlay,
+) -> bool {
+    if matches!(outcome, Ok(SaveOutcome::Saved)) {
+        window.set_widget_name(&existing_widget_name(id));
+    }
+
+    match outcome {
         Ok(SaveOutcome::Saved) => {
             title.set_subtitle("Saved");
             true
