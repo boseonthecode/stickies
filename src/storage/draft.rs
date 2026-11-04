@@ -1,0 +1,215 @@
+use uuid::Uuid;
+
+use crate::error::StorageError;
+
+use super::note::{Note, NoteStore};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveOutcome {
+    Clean,
+    Deferred,
+    Saved,
+}
+
+#[derive(Debug)]
+pub struct NoteDraft {
+    store: NoteStore,
+    note: Note,
+    persisted: bool,
+    dirty: bool,
+}
+
+impl NoteDraft {
+    pub fn new(store: NoteStore) -> Self {
+        Self {
+            store,
+            note: Note::new(),
+            persisted: false,
+            dirty: false,
+        }
+    }
+
+    pub fn existing(store: NoteStore, id: Uuid) -> Result<Self, StorageError> {
+        let note = store.load(id)?;
+
+        Ok(Self {
+            store,
+            note,
+            persisted: true,
+            dirty: false,
+        })
+    }
+
+    pub fn id(&self) -> Uuid {
+        self.note.meta.id
+    }
+
+    pub fn text(&self) -> &str {
+        &self.note.body
+    }
+
+    pub fn set_text(&mut self, text: String) {
+        if self.note.body != text {
+            self.note.body = text;
+            self.dirty = true;
+        }
+    }
+
+    pub fn is_persisted(&self) -> bool {
+        self.persisted
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    pub fn has_content(&self) -> bool {
+        !self.note.body.trim().is_empty() || !self.note.meta.attachments.is_empty()
+    }
+
+    pub fn save_if_needed(&mut self) -> Result<SaveOutcome, StorageError> {
+        if !self.persisted && !self.has_content() {
+            return Ok(SaveOutcome::Deferred);
+        }
+
+        if !self.dirty {
+            return Ok(SaveOutcome::Clean);
+        }
+
+        self.store.save(&mut self.note)?;
+        self.persisted = true;
+        self.dirty = false;
+
+        Ok(SaveOutcome::Saved)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::TempDir;
+
+    use crate::config::DataPaths;
+
+    use super::*;
+
+    fn store() -> (TempDir, NoteStore) {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let paths = DataPaths::with_root(temp.path().join("stickies"));
+        let store = NoteStore::new(paths);
+        (temp, store)
+    }
+
+    #[test]
+    fn empty_new_draft_is_not_written() {
+        let (_temp, store) = store();
+        let mut draft = NoteDraft::new(store.clone());
+
+        assert_eq!(
+            draft.save_if_needed().expect("save attempt"),
+            SaveOutcome::Deferred
+        );
+        assert!(!draft.is_persisted());
+        assert!(store.list_ids().expect("notes listed").is_empty());
+    }
+
+    #[test]
+    fn whitespace_only_new_draft_is_not_written() {
+        let (_temp, store) = store();
+        let mut draft = NoteDraft::new(store.clone());
+        draft.set_text(" \n\t ".to_owned());
+
+        assert_eq!(
+            draft.save_if_needed().expect("save attempt"),
+            SaveOutcome::Deferred
+        );
+        assert!(store.list_ids().expect("notes listed").is_empty());
+    }
+
+    #[test]
+    fn new_draft_writes_after_real_content() {
+        let (_temp, store) = store();
+        let mut draft = NoteDraft::new(store.clone());
+        draft.set_text("# A real note".to_owned());
+
+        assert_eq!(
+            draft.save_if_needed().expect("note saved"),
+            SaveOutcome::Saved
+        );
+        assert!(draft.is_persisted());
+        assert!(!draft.is_dirty());
+        assert_eq!(
+            draft.save_if_needed().expect("clean save"),
+            SaveOutcome::Clean
+        );
+
+        let loaded = store.load(draft.id()).expect("note loaded");
+        assert_eq!(loaded.body, "# A real note");
+    }
+
+    #[test]
+    fn existing_note_is_clean_until_edited() {
+        let (_temp, store) = store();
+        let mut note = store.create().expect("note created");
+        note.body = "original".to_owned();
+        store.save(&mut note).expect("note saved");
+        let mut draft = NoteDraft::existing(store.clone(), note.meta.id).expect("draft loaded");
+
+        assert_eq!(
+            draft.save_if_needed().expect("clean save"),
+            SaveOutcome::Clean
+        );
+
+        draft.set_text("original".to_owned());
+        assert!(!draft.is_dirty());
+
+        draft.set_text("changed".to_owned());
+        assert!(draft.is_dirty());
+        assert_eq!(
+            draft.save_if_needed().expect("note saved"),
+            SaveOutcome::Saved
+        );
+        assert_eq!(
+            store.load(note.meta.id).expect("note loaded").body,
+            "changed"
+        );
+    }
+
+    #[test]
+    fn existing_note_can_be_saved_empty() {
+        let (_temp, store) = store();
+        let mut note = store.create().expect("note created");
+        note.body = "text".to_owned();
+        store.save(&mut note).expect("note saved");
+        let mut draft = NoteDraft::existing(store.clone(), note.meta.id).expect("draft loaded");
+        draft.set_text(String::new());
+
+        assert_eq!(
+            draft.save_if_needed().expect("note saved"),
+            SaveOutcome::Saved
+        );
+        assert!(
+            store
+                .load(note.meta.id)
+                .expect("note loaded")
+                .body
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn failed_save_keeps_the_draft_dirty() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let root = temp.path().join("stickies");
+        fs::create_dir_all(&root).expect("root directory");
+        fs::write(root.join("notes"), b"blocked").expect("blocking file");
+        let store = NoteStore::new(DataPaths::with_root(root));
+        let mut draft = NoteDraft::new(store);
+        draft.set_text("will fail".to_owned());
+
+        assert!(draft.save_if_needed().is_err());
+        assert!(draft.is_dirty());
+        assert!(!draft.is_persisted());
+    }
+}

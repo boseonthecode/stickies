@@ -6,6 +6,7 @@ use libadwaita as adw;
 
 use crate::cli::Cli;
 use crate::config::DataPaths;
+use crate::storage::note::NoteStore;
 use crate::ui::registry::WindowRegistry;
 
 pub fn run() -> glib::ExitCode {
@@ -26,7 +27,7 @@ pub fn run() -> glib::ExitCode {
         .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)
         .build();
 
-    let registry = Rc::new(WindowRegistry::default());
+    let registry = Rc::new(WindowRegistry::new(NoteStore::new(data_paths)));
     let startup_registry = Rc::clone(&registry);
     let activate_registry = Rc::clone(&registry);
 

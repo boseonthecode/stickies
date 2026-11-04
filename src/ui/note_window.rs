@@ -1,11 +1,40 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::time::Duration;
+
 use gdk4 as gdk;
 use gtk4 as gtk;
 use libadwaita as adw;
 use libadwaita::prelude::*;
+use sourceview5 as source;
+use sourceview5::prelude::*;
+use uuid::Uuid;
+
+use crate::error::StorageError;
+use crate::storage::draft::{NoteDraft, SaveOutcome};
+use crate::storage::note::NoteStore;
 
 pub const WIDGET_NAME: &str = "note-window";
 
-pub fn present(app: &adw::Application, number: u64) {
+const AUTOSAVE_DELAY: Duration = Duration::from_millis(650);
+const SAVE_ERROR_MESSAGE: &str = "Could not save note. Check disk space and permissions.";
+
+pub fn present(app: &adw::Application, number: u64, store: NoteStore) {
+    present_draft(app, number, NoteDraft::new(store));
+}
+
+pub fn present_existing(
+    app: &adw::Application,
+    number: u64,
+    store: NoteStore,
+    id: Uuid,
+) -> Result<(), StorageError> {
+    let draft = NoteDraft::existing(store, id)?;
+    present_draft(app, number, draft);
+    Ok(())
+}
+
+fn present_draft(app: &adw::Application, number: u64, draft: NoteDraft) {
     let title = format!("Note {number}");
     let window = adw::ApplicationWindow::builder()
         .application(app)
@@ -15,17 +44,23 @@ pub fn present(app: &adw::Application, number: u64) {
         .build();
     window.set_widget_name(WIDGET_NAME);
 
-    let title_label = gtk::Label::new(Some(&title));
+    let title_widget = adw::WindowTitle::new(&title, "");
     let header = adw::HeaderBar::new();
-    header.set_title_widget(Some(&title_label));
+    header.set_title_widget(Some(&title_widget));
 
-    let editor = gtk::TextView::builder()
-        .wrap_mode(gtk::WrapMode::WordChar)
-        .margin_top(12)
-        .margin_bottom(12)
-        .margin_start(12)
-        .margin_end(12)
-        .build();
+    let buffer = source::Buffer::new(None);
+    if let Some(language) = source::LanguageManager::default().language("markdown") {
+        buffer.set_language(Some(&language));
+    }
+    buffer.set_highlight_syntax(true);
+
+    let editor = source::View::with_buffer(&buffer);
+    editor.set_wrap_mode(gtk::WrapMode::WordChar);
+    editor.set_highlight_current_line(true);
+    editor.set_top_margin(12);
+    editor.set_bottom_margin(12);
+    editor.set_left_margin(12);
+    editor.set_right_margin(12);
     editor.add_css_class("monospace");
 
     let editor_scroll = gtk::ScrolledWindow::builder()
@@ -60,8 +95,59 @@ pub fn present(app: &adw::Application, number: u64) {
     toolbar.add_top_bar(&header);
     toolbar.set_content(Some(&content));
 
-    window.set_content(Some(&toolbar));
-    window.connect_close_request(|_| glib::Propagation::Proceed);
+    let overlay = adw::ToastOverlay::new();
+    overlay.set_child(Some(&toolbar));
+    window.set_content(Some(&overlay));
+
+    let initial_text = draft.text().to_owned();
+    if !initial_text.is_empty() {
+        buffer.set_text(&initial_text);
+    }
+
+    let session = Rc::new(RefCell::new(draft));
+    let debounce = Rc::new(RefCell::new(None::<glib::SourceId>));
+
+    let changed_session = Rc::clone(&session);
+    let changed_debounce = Rc::clone(&debounce);
+    let changed_title = title_widget.clone();
+    let changed_overlay = overlay.clone();
+    buffer.connect_changed(move |buffer| {
+        let text = buffer
+            .text(&buffer.start_iter(), &buffer.end_iter(), true)
+            .to_string();
+        changed_session.borrow_mut().set_text(text);
+        changed_title.set_subtitle("Saving…");
+
+        if let Some(source) = changed_debounce.borrow_mut().take() {
+            source.remove();
+        }
+
+        let save_session = Rc::clone(&changed_session);
+        let save_title = changed_title.clone();
+        let save_overlay = changed_overlay.clone();
+        let next_debounce = Rc::clone(&changed_debounce);
+        let source = glib::timeout_add_local_once(AUTOSAVE_DELAY, move || {
+            next_debounce.borrow_mut().take();
+            save_now(&save_session, &save_title, &save_overlay);
+        });
+        *changed_debounce.borrow_mut() = Some(source);
+    });
+
+    let close_session = Rc::clone(&session);
+    let close_debounce = Rc::clone(&debounce);
+    let close_title = title_widget.clone();
+    let close_overlay = overlay.clone();
+    window.connect_close_request(move |_| {
+        if let Some(source) = close_debounce.borrow_mut().take() {
+            source.remove();
+        }
+
+        if save_now(&close_session, &close_title, &close_overlay) {
+            glib::Propagation::Proceed
+        } else {
+            glib::Propagation::Stop
+        }
+    });
 
     let key_controller = gtk::EventControllerKey::new();
     let window_weak = window.downgrade();
@@ -79,4 +165,34 @@ pub fn present(app: &adw::Application, number: u64) {
 
     window.present();
     editor.grab_focus();
+}
+
+fn save_now(
+    session: &Rc<RefCell<NoteDraft>>,
+    title: &adw::WindowTitle,
+    overlay: &adw::ToastOverlay,
+) -> bool {
+    let id = session.borrow().id();
+
+    match session.borrow_mut().save_if_needed() {
+        Ok(SaveOutcome::Saved) => {
+            title.set_subtitle("Saved");
+            true
+        }
+        Ok(SaveOutcome::Deferred) => {
+            title.set_subtitle("");
+            true
+        }
+        Ok(SaveOutcome::Clean) => true,
+        Err(_error) => {
+            tracing::error!(note_id = %id, "note save failed");
+            title.set_subtitle("Save failed");
+
+            let toast = adw::Toast::new(SAVE_ERROR_MESSAGE);
+            toast.set_timeout(5);
+            overlay.add_toast(toast);
+
+            false
+        }
+    }
 }
