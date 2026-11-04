@@ -4,7 +4,8 @@ use uuid::Uuid;
 
 use crate::error::StorageError;
 
-use super::note::{Note, NoteStore};
+use super::attachments;
+use super::note::{AttachmentMeta, Note, NoteStore};
 use super::paths;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +50,18 @@ impl NoteDraft {
 
     pub fn text(&self) -> &str {
         &self.note.body
+    }
+
+    pub fn attachments(&self) -> &[AttachmentMeta] {
+        &self.note.meta.attachments
+    }
+
+    pub fn add_png(&mut self, bytes: &[u8]) -> Result<AttachmentMeta, StorageError> {
+        let attachment =
+            attachments::import_png_bytes(self.store.paths(), self.note.meta.id, bytes)?;
+        self.note.meta.attachments.push(attachment.clone());
+        self.dirty = true;
+        Ok(attachment)
     }
 
     pub fn set_text(&mut self, text: String) {
@@ -220,6 +233,29 @@ mod tests {
             store.load(note.meta.id).expect("note loaded").body,
             "changed"
         );
+    }
+
+    #[test]
+    fn image_attachment_is_saved_without_body_text() {
+        let (_temp, store) = store();
+        let mut draft = NoteDraft::new(store.clone());
+        let bytes = [0x89, b'P', b'N', b'G', 9, 8, 7];
+        let attachment = draft.add_png(&bytes).expect("attachment added");
+
+        assert!(draft.has_content());
+        assert_eq!(draft.finish().expect("draft finished"), SaveOutcome::Saved);
+
+        let loaded = store.load(draft.id()).expect("note loaded");
+        assert!(loaded.body.is_empty());
+        assert_eq!(loaded.meta.attachments, vec![attachment.clone()]);
+        assert!(
+            paths::attachments_dir(store.paths(), draft.id())
+                .join(&attachment.stored_name)
+                .exists()
+        );
+
+        let reopened = NoteDraft::existing(store, draft.id()).expect("draft reopened");
+        assert_eq!(reopened.attachments(), &[attachment]);
     }
 
     #[test]

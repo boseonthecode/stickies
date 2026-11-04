@@ -68,6 +68,8 @@ pub enum StorageError {
     NotDirectory { path: PathBuf },
     #[error("refusing to follow symlink at {path}")]
     Symlink { path: PathBuf },
+    #[error("refusing to store an empty attachment")]
+    EmptyAttachment,
     #[error("metadata id mismatch: expected {expected}, found {found}")]
     IdMismatch { expected: Uuid, found: Uuid },
     #[error("unsupported metadata schema version {version} for note {id}")]

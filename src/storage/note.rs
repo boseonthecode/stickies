@@ -1,7 +1,5 @@
 use std::fs;
 use std::io;
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -11,7 +9,7 @@ use uuid::Uuid;
 use crate::config::DataPaths;
 use crate::error::StorageError;
 
-use super::paths;
+use super::{atomic, paths};
 
 pub const META_SCHEMA_VERSION: u32 = 1;
 
@@ -126,11 +124,11 @@ impl NoteStore {
             }
         })?;
 
-        atomic_write(
+        atomic::write(
             &paths::body_path(&self.paths, note.meta.id),
             note.body.as_bytes(),
         )?;
-        atomic_write(&paths::metadata_path(&self.paths, note.meta.id), &metadata)?;
+        atomic::write(&paths::metadata_path(&self.paths, note.meta.id), &metadata)?;
 
         Ok(())
     }
@@ -281,33 +279,4 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, StorageError> {
             source,
         }),
     }
-}
-
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
-    let parent = path.parent().ok_or_else(|| StorageError::Write {
-        path: path.to_path_buf(),
-        source: io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"),
-    })?;
-    let temporary = parent.join(format!(".atomic-{}.tmp", Uuid::now_v7()));
-
-    let result: io::Result<()> = (|| {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temporary)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        drop(file);
-        fs::rename(&temporary, path)
-    })();
-
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-
-    result.map_err(|source| StorageError::Write {
-        path: path.to_path_buf(),
-        source,
-    })
 }
