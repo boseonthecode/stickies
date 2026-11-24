@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Stickies
+Comment=Start Stickies in the background
+Exec=@EXEC@ --background
+Icon=io.github.chthonic.Stickies
+Terminal=false
+NoDisplay=true
+Hidden=false
+X-GNOME-Autostart-enabled=true

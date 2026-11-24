@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Stickies
+GenericName=Sticky Notes
+Comment=Capture and find local notes
+Exec=@EXEC@ browse
+Icon=io.github.chthonic.Stickies
+Terminal=false
+StartupNotify=true
+Categories=Utility;
+Keywords=notes;sticky;markdown;search;clipboard;

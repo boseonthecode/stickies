@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.chthonic.Stickies</id>
+  <name>Stickies</name>
+  <summary>Capture and find local sticky notes</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary</project_license>
+  <developer id="io.github.chthonic">
+    <name>chthonic</name>
+  </developer>
+  <url type="homepage">https://github.com/boseonthecode/stickies</url>
+  <description>
+    <p>Stickies is a fast, keyboard-first note application for Fedora GNOME that captures text, images, files, and clipboard contents as local Markdown notes.</p>
+    <p>Notes are stored as plain Markdown files under your local data directory. Text, images, clipboard contents, and dropped files can be captured immediately and searched with full-text matching.</p>
+    <ul>
+      <li>Autosaving Markdown editor with syntax highlighting</li>
+      <li>Full-text search over note bodies, tags, and attachment names</li>
+      <li>Inline image thumbnails and file attachments</li>
+      <li>Tags, pinning, trash, restore, and permanent deletion</li>
+      <li>List and card-grid browser views</li>
+      <li>No network access, accounts, or cloud sync</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.chthonic.Stickies.desktop</launchable>
+  <provides>
+    <binary>stickies</binary>
+  </provides>
+  <categories>
+    <category>Utility</category>
+  </categories>
+  <keywords>
+    <keyword>notes</keyword>
+    <keyword>sticky</keyword>
+    <keyword>markdown</keyword>
+    <keyword>search</keyword>
+    <keyword>clipboard</keyword>
+  </keywords>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-11-05">
+      <description>
+        <p>Initial v1 release with local notes, Markdown editing, attachments, search, tags, pinning, and trash management.</p>
+      </description>
+    </release>
+  </releases>
+</component>

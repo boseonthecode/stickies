@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <title>Stickies</title>
+  <rect x="16" y="12" width="96" height="104" rx="14" fill="#f6d32d"/>
+  <path d="M94 12h4a14 14 0 0 1 14 14v18l-32-32z" fill="#e5b800"/>
+  <path d="M80 12l32 32H94a14 14 0 0 1-14-14z" fill="#c99c00"/>
+  <rect x="30" y="38" width="52" height="7" rx="3.5" fill="#4a3b00"/>
+  <rect x="30" y="56" width="68" height="7" rx="3.5" fill="#6b5600"/>
+  <rect x="30" y="74" width="60" height="7" rx="3.5" fill="#6b5600"/>
+  <rect x="30" y="92" width="40" height="7" rx="3.5" fill="#6b5600"/>
+</svg>
