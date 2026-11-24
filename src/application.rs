@@ -1,15 +1,44 @@
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use clap::Parser;
 use gio::prelude::*;
+use gtk4::prelude::GtkApplicationExt;
 use libadwaita as adw;
 
 use crate::cli::Cli;
 use crate::config::DataPaths;
+use crate::storage::index::SearchIndex;
 use crate::storage::note::NoteStore;
 use crate::ui::registry::WindowRegistry;
 
 pub fn run() -> glib::ExitCode {
+    let app = adw::Application::builder()
+        .application_id(crate::APP_ID)
+        .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)
+        .build();
+
+    // Startup only runs in the primary instance. Secondary invocations forward their
+    // command line and must not open or rebuild the index on the way through.
+    let startup_registry = Rc::new(RefCell::new(None::<Rc<WindowRegistry>>));
+    let activate_registry = Rc::clone(&startup_registry);
+    app.connect_startup(move |app| match initialize_registry() {
+        Some(registry) => {
+            *startup_registry.borrow_mut() = Some(Rc::clone(&registry));
+            setup_actions(app, &registry);
+        }
+        None => app.quit(),
+    });
+    app.connect_activate(move |app| {
+        if let Some(registry) = activate_registry.borrow().as_ref() {
+            registry.open_browser(app);
+        }
+    });
+    app.connect_command_line(handle_command_line);
+    app.run()
+}
+
+fn initialize_registry() -> Option<Rc<WindowRegistry>> {
     let data_paths = match DataPaths::resolve().and_then(|paths| {
         paths.ensure_dirs()?;
         Ok(paths)
@@ -17,24 +46,20 @@ pub fn run() -> glib::ExitCode {
         Ok(paths) => paths,
         Err(error) => {
             tracing::error!(%error, "failed to initialize data directory");
-            return glib::ExitCode::FAILURE;
+            return None;
         }
     };
     tracing::info!(root = %data_paths.root.display(), "data directories ready");
 
-    let app = adw::Application::builder()
-        .application_id(crate::APP_ID)
-        .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)
-        .build();
+    let store = match SearchIndex::open(&data_paths) {
+        Ok(index) => NoteStore::new(data_paths).with_index(Rc::new(index)),
+        Err(error) => {
+            tracing::error!(%error, "failed to open search index");
+            NoteStore::new(data_paths)
+        }
+    };
 
-    let registry = Rc::new(WindowRegistry::new(NoteStore::new(data_paths)));
-    let startup_registry = Rc::clone(&registry);
-    let activate_registry = Rc::clone(&registry);
-
-    app.connect_startup(move |app| setup_actions(app, &startup_registry));
-    app.connect_activate(move |app| activate_registry.open_browser(app));
-    app.connect_command_line(handle_command_line);
-    app.run()
+    Some(Rc::new(WindowRegistry::new(store)))
 }
 
 fn setup_actions(app: &adw::Application, registry: &Rc<WindowRegistry>) {
@@ -58,6 +83,7 @@ fn setup_actions(app: &adw::Application, registry: &Rc<WindowRegistry>) {
     let quit_app = app.clone();
     quit_action.connect_activate(move |_, _| quit_app.quit());
     app.add_action(&quit_action);
+    app.set_accels_for_action("app.quit", &["<Control>q"]);
 }
 
 fn handle_command_line(

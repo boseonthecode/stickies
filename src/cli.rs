@@ -21,12 +21,14 @@ pub struct Cli {
 pub enum Command {
     New,
     Browse,
+    Quit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     New,
     Browse,
+    Quit,
 }
 
 impl Cli {
@@ -38,6 +40,7 @@ impl Cli {
         Some(match self.command.unwrap_or(Command::Browse) {
             Command::New => Action::New,
             Command::Browse => Action::Browse,
+            Command::Quit => Action::Quit,
         })
     }
 }
@@ -47,6 +50,7 @@ impl Action {
         match self {
             Self::New => "new",
             Self::Browse => "browse",
+            Self::Quit => "quit",
         }
     }
 }
@@ -75,6 +79,11 @@ mod tests {
             parse(&["stickies", "browse"]).action(),
             Some(Action::Browse)
         );
+    }
+
+    #[test]
+    fn parses_quit_command() {
+        assert_eq!(parse(&["stickies", "quit"]).action(), Some(Action::Quit));
     }
 
     #[test]
