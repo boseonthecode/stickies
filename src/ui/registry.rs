@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::rc::Rc;
 
 use libadwaita as adw;
 use libadwaita::prelude::*;
@@ -48,7 +49,7 @@ impl WindowRegistry {
         }
     }
 
-    pub fn open_browser(&self, app: &adw::Application) {
+    pub fn open_browser(self: &Rc<Self>, app: &adw::Application) {
         if let Some(window) = app
             .windows()
             .iter()
@@ -60,6 +61,6 @@ impl WindowRegistry {
         }
 
         tracing::info!("creating browser window");
-        browser_window::present(app);
+        browser_window::present(app, Rc::clone(self), self.store.clone());
     }
 }
