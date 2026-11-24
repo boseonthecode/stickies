@@ -1,6 +1,7 @@
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::rc::Rc;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -9,6 +10,7 @@ use uuid::Uuid;
 use crate::config::DataPaths;
 use crate::error::StorageError;
 
+use super::index::SearchIndex;
 use super::{atomic, paths};
 
 pub const META_SCHEMA_VERSION: u32 = 1;
@@ -85,15 +87,25 @@ impl Default for Note {
 #[derive(Debug, Clone)]
 pub struct NoteStore {
     paths: DataPaths,
+    index: Option<Rc<SearchIndex>>,
 }
 
 impl NoteStore {
     pub fn new(paths: DataPaths) -> Self {
-        Self { paths }
+        Self { paths, index: None }
+    }
+
+    pub fn with_index(mut self, index: Rc<SearchIndex>) -> Self {
+        self.index = Some(index);
+        self
     }
 
     pub fn paths(&self) -> &DataPaths {
         &self.paths
+    }
+
+    pub fn index(&self) -> Option<Rc<SearchIndex>> {
+        self.index.clone()
     }
 
     pub fn create(&self) -> Result<Note, StorageError> {
@@ -129,6 +141,16 @@ impl NoteStore {
             note.body.as_bytes(),
         )?;
         atomic::write(&paths::metadata_path(&self.paths, note.meta.id), &metadata)?;
+
+        if let Some(index) = &self.index
+            && let Err(error) = index.upsert(note)
+        {
+            tracing::warn!(
+                note_id = %note.meta.id,
+                %error,
+                "failed to update search index"
+            );
+        }
 
         Ok(())
     }

@@ -1,12 +1,14 @@
 use std::fs;
+use std::io;
 
 use uuid::Uuid;
 
 use crate::error::StorageError;
 
-use super::attachments;
+use super::attachments::{self, AttachmentEntry, FileCandidate, FileImportReport};
 use super::note::{AttachmentMeta, Note, NoteStore};
 use super::paths;
+use super::tags;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SaveOutcome {
@@ -34,7 +36,8 @@ impl NoteDraft {
     }
 
     pub fn existing(store: NoteStore, id: Uuid) -> Result<Self, StorageError> {
-        let note = store.load(id)?;
+        let mut note = store.load(id)?;
+        note.meta.tags = tags::normalize_tags(&note.meta.tags);
 
         Ok(Self {
             store,
@@ -56,12 +59,125 @@ impl NoteDraft {
         &self.note.meta.attachments
     }
 
+    pub fn tags(&self) -> &[String] {
+        &self.note.meta.tags
+    }
+
+    pub fn pinned(&self) -> bool {
+        self.note.meta.pinned
+    }
+
+    pub fn add_tags(&mut self, tags: &[String]) -> bool {
+        if tags::merge_tags(&mut self.note.meta.tags, tags) {
+            self.dirty = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn remove_tag(&mut self, tag: &str) -> bool {
+        if tags::remove_tag(&mut self.note.meta.tags, tag) {
+            self.dirty = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn set_pinned(&mut self, pinned: bool) -> bool {
+        if self.note.meta.pinned == pinned {
+            return false;
+        }
+
+        self.note.meta.pinned = pinned;
+        self.dirty = true;
+        true
+    }
+
     pub fn add_png(&mut self, bytes: &[u8]) -> Result<AttachmentMeta, StorageError> {
         let attachment =
             attachments::import_png_bytes(self.store.paths(), self.note.meta.id, bytes)?;
-        self.note.meta.attachments.push(attachment.clone());
-        self.dirty = true;
+        self.add_attachment(attachment.clone());
         Ok(attachment)
+    }
+
+    pub fn add_attachment(&mut self, attachment: AttachmentMeta) {
+        self.note.meta.attachments.push(attachment);
+        self.dirty = true;
+    }
+
+    pub fn add_files(&mut self, files: &[FileCandidate]) -> Result<FileImportReport, StorageError> {
+        let report = attachments::import_files(self.store.paths(), self.note.meta.id, files)?;
+
+        if !report.imported.is_empty() {
+            self.note
+                .meta
+                .attachments
+                .extend(report.imported.iter().cloned());
+            self.dirty = true;
+        }
+
+        Ok(report)
+    }
+
+    pub fn attachment_entries(&self) -> Vec<AttachmentEntry> {
+        self.note
+            .meta
+            .attachments
+            .iter()
+            .map(|attachment| {
+                attachments::attachment_entry(self.store.paths(), self.note.meta.id, attachment)
+            })
+            .collect()
+    }
+
+    pub fn remove_attachment(&mut self, attachment_id: Uuid) -> Result<bool, StorageError> {
+        let Some(index) = self
+            .note
+            .meta
+            .attachments
+            .iter()
+            .position(|attachment| attachment.id == attachment_id)
+        else {
+            return Ok(false);
+        };
+
+        let attachment = &self.note.meta.attachments[index];
+        if let Some(path) = paths::attachment_path(
+            self.store.paths(),
+            self.note.meta.id,
+            &attachment.stored_name,
+        ) {
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(StorageError::Symlink { path });
+                }
+                Ok(metadata) if !metadata.is_file() => {
+                    return Err(StorageError::Remove {
+                        path: path.clone(),
+                        source: io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "attachment is not a regular file",
+                        ),
+                    });
+                }
+                Ok(_) => {
+                    fs::remove_file(&path).map_err(|source| StorageError::Remove {
+                        path: path.clone(),
+                        source,
+                    })?;
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    return Err(StorageError::Read { path, source });
+                }
+            }
+        }
+
+        self.note.meta.attachments.remove(index);
+        self.dirty = true;
+        Ok(true)
     }
 
     pub fn set_text(&mut self, text: String) {
@@ -80,7 +196,10 @@ impl NoteDraft {
     }
 
     pub fn has_content(&self) -> bool {
-        !self.note.body.trim().is_empty() || !self.note.meta.attachments.is_empty()
+        !self.note.body.trim().is_empty()
+            || !self.note.meta.attachments.is_empty()
+            || !self.note.meta.tags.is_empty()
+            || self.note.meta.pinned
     }
 
     pub fn save_if_needed(&mut self) -> Result<SaveOutcome, StorageError> {
@@ -150,6 +269,7 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::config::DataPaths;
+    use crate::storage::note::AttachmentKind;
 
     use super::*;
 
@@ -208,6 +328,25 @@ mod tests {
     }
 
     #[test]
+    fn tags_and_pinning_materialize_a_new_draft() {
+        let (_temp, store) = store();
+        let mut draft = NoteDraft::new(store.clone());
+
+        assert!(draft.add_tags(&["#Work".to_owned(), "idea".to_owned()]));
+        assert!(draft.set_pinned(true));
+        assert!(!draft.add_tags(&["work".to_owned()]));
+
+        assert_eq!(
+            draft.save_if_needed().expect("note saved"),
+            SaveOutcome::Saved
+        );
+
+        let loaded = store.load(draft.id()).expect("note loaded");
+        assert_eq!(loaded.meta.tags, vec!["Work", "idea"]);
+        assert!(loaded.meta.pinned);
+    }
+
+    #[test]
     fn existing_note_is_clean_until_edited() {
         let (_temp, store) = store();
         let mut note = store.create().expect("note created");
@@ -256,6 +395,106 @@ mod tests {
 
         let reopened = NoteDraft::existing(store, draft.id()).expect("draft reopened");
         assert_eq!(reopened.attachments(), &[attachment]);
+    }
+
+    #[test]
+    fn file_attachments_are_saved_without_body_text() {
+        let (temp, store) = store();
+        let source = temp.path().join("report.txt");
+        fs::write(&source, b"report").expect("source file");
+        let candidate = FileCandidate {
+            path: source,
+            original_name: "report.txt".to_owned(),
+            size_bytes: 6,
+        };
+        let mut draft = NoteDraft::new(store.clone());
+
+        let report = draft.add_files(&[candidate]).expect("files added");
+
+        assert_eq!(report.imported.len(), 1);
+        assert!(report.rejected.is_empty());
+        assert!(draft.has_content());
+        assert_eq!(draft.finish().expect("draft finished"), SaveOutcome::Saved);
+
+        let loaded = store.load(draft.id()).expect("note loaded");
+        assert!(loaded.body.is_empty());
+        assert_eq!(loaded.meta.attachments, report.imported);
+        assert_eq!(loaded.meta.attachments[0].original_name, "report.txt");
+        assert_eq!(loaded.meta.attachments[0].kind, AttachmentKind::File);
+    }
+
+    #[test]
+    fn attachment_entries_report_missing_files() {
+        let (temp, store) = store();
+        let source = temp.path().join("report.txt");
+        fs::write(&source, b"report").expect("source file");
+        let candidate = FileCandidate {
+            path: source,
+            original_name: "report.txt".to_owned(),
+            size_bytes: 6,
+        };
+        let mut draft = NoteDraft::new(store);
+        let report = draft.add_files(&[candidate]).expect("files added");
+
+        let entries = draft.attachment_entries();
+        assert_eq!(entries.len(), 1);
+        assert!(!entries[0].missing);
+        let stored_path = entries[0].path.clone().expect("attachment path");
+        assert_eq!(entries[0].attachment, report.imported[0]);
+
+        fs::remove_file(stored_path).expect("attachment removed from disk");
+
+        let entries = draft.attachment_entries();
+        assert!(entries[0].missing);
+        assert!(
+            draft
+                .remove_attachment(entries[0].attachment.id)
+                .expect("metadata removed")
+        );
+        assert!(draft.attachments().is_empty());
+    }
+
+    #[test]
+    fn removes_attachment_file_and_metadata() {
+        let (_temp, store) = store();
+        let mut draft = NoteDraft::new(store.clone());
+        let attachment = draft
+            .add_png(&[0x89, b'P', b'N', b'G'])
+            .expect("attachment added");
+        let path = paths::attachments_dir(store.paths(), draft.id()).join(&attachment.stored_name);
+        assert!(path.exists());
+
+        assert!(
+            draft
+                .remove_attachment(attachment.id)
+                .expect("attachment removed")
+        );
+
+        assert!(!path.exists());
+        assert!(draft.attachments().is_empty());
+        assert!(draft.is_dirty());
+    }
+
+    #[test]
+    fn refuses_to_remove_a_symlinked_attachment() {
+        use std::os::unix::fs::symlink;
+
+        let (temp, store) = store();
+        let mut draft = NoteDraft::new(store.clone());
+        let attachment = draft
+            .add_png(&[0x89, b'P', b'N', b'G'])
+            .expect("attachment added");
+        let path = paths::attachments_dir(store.paths(), draft.id()).join(&attachment.stored_name);
+        let target = temp.path().join("target.png");
+        fs::write(&target, b"target").expect("target file");
+        fs::remove_file(&path).expect("attachment file removed");
+        symlink(&target, &path).expect("symlink created");
+
+        assert!(matches!(
+            draft.remove_attachment(attachment.id),
+            Err(StorageError::Symlink { .. })
+        ));
+        assert_eq!(draft.attachments().len(), 1);
     }
 
     #[test]
@@ -320,5 +559,6 @@ mod tests {
         assert!(draft.save_if_needed().is_err());
         assert!(draft.is_dirty());
         assert!(!draft.is_persisted());
+        assert_eq!(draft.text(), "will fail");
     }
 }

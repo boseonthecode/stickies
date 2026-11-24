@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -22,6 +23,20 @@ pub fn metadata_path(paths: &DataPaths, id: Uuid) -> PathBuf {
 
 pub fn attachments_dir(paths: &DataPaths, id: Uuid) -> PathBuf {
     note_dir(paths, id).join("attachments")
+}
+
+pub fn attachment_path(paths: &DataPaths, id: Uuid, stored_name: &str) -> Option<PathBuf> {
+    let name = Path::new(stored_name);
+    if stored_name.is_empty()
+        || stored_name == "."
+        || stored_name == ".."
+        || stored_name.contains('\\')
+        || name.file_name() != Some(OsStr::new(stored_name))
+    {
+        return None;
+    }
+
+    Some(attachments_dir(paths, id).join(stored_name))
 }
 
 pub fn create_private_dir(path: &Path) -> Result<(), StorageError> {

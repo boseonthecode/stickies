@@ -8,6 +8,36 @@ use uuid::Uuid;
 
 use crate::error::StorageError;
 
+pub(crate) fn copy(source: &Path, destination: &Path) -> Result<(), StorageError> {
+    let parent = destination.parent().ok_or_else(|| StorageError::Write {
+        path: destination.to_path_buf(),
+        source: io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"),
+    })?;
+    let temporary = parent.join(format!(".atomic-{}.tmp", Uuid::now_v7()));
+
+    let result: io::Result<()> = (|| {
+        let mut source_file = fs::File::open(source)?;
+        let mut destination_file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temporary)?;
+        io::copy(&mut source_file, &mut destination_file)?;
+        destination_file.sync_all()?;
+        drop(destination_file);
+        fs::rename(&temporary, destination)
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+
+    result.map_err(|source| StorageError::Write {
+        path: destination.to_path_buf(),
+        source,
+    })
+}
+
 pub(crate) fn write(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
     let parent = path.parent().ok_or_else(|| StorageError::Write {
         path: path.to_path_buf(),

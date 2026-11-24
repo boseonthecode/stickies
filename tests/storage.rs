@@ -53,6 +53,23 @@ fn round_trips_all_note_fields() {
 }
 
 #[test]
+fn markdown_bodies_round_trip_verbatim() {
+    let (_temp, store) = test_store();
+    let mut note = store.create().expect("note created");
+    let body = "# Heading\n\n*emphasis* and **strong**\n\n- one\n- two\n\n```rust\nlet x = 1;\n```\n\n[link](https://example.com) — ünïcode\n";
+    note.body = body.to_owned();
+    store.save(&mut note).expect("note saved");
+
+    let loaded = store.load(note.meta.id).expect("note loaded");
+
+    assert_eq!(loaded.body, body);
+    assert_eq!(
+        fs::read_to_string(paths::body_path(store.paths(), note.meta.id)).expect("body read"),
+        body
+    );
+}
+
+#[test]
 fn creates_distinct_sortable_note_ids() {
     let (_temp, store) = test_store();
 

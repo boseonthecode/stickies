@@ -64,6 +64,8 @@ pub enum StorageError {
     },
     #[error("note {id} does not exist")]
     NotFound { id: Uuid },
+    #[error("note {id} must be moved to Trash before permanent deletion")]
+    NotTrashed { id: Uuid },
     #[error("expected a directory at {path}")]
     NotDirectory { path: PathBuf },
     #[error("refusing to follow symlink at {path}")]
@@ -80,4 +82,30 @@ pub enum StorageError {
         #[source]
         source: std::str::Utf8Error,
     },
+}
+
+#[derive(Debug, Error)]
+pub enum IndexError {
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+    #[error("index database error at {path}: {source}")]
+    Database {
+        path: PathBuf,
+        #[source]
+        source: rusqlite::Error,
+    },
+    #[error("failed to reset index file {path}: {source}")]
+    Reset {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("failed to set permissions on index file {path}: {source}")]
+    SetPermissions {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error(transparent)]
+    Storage(#[from] StorageError),
 }
